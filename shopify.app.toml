@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "9a0e8efcebdc44416f6938318ac3ca7b"
-application_url = "https://example.com"
+application_url = "https://ai-catalog-optimizer-production.up.railway.app"
 embedded = true
 name = "ai-catalog-optimizer"
 
@@ -49,8 +49,7 @@ api_version = "2026-10"
   topics = [ "app_subscriptions/update" ]
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://ai-catalog-optimizer-production.up.railway.app/auth/callback" ]
 
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = true
