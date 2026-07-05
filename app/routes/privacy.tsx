@@ -1,5 +1,5 @@
 const SUPPORT_EMAIL =
-  process.env.SUPPORT_EMAIL ?? "support@example.com";
+  process.env.SUPPORT_EMAIL ?? "liu831666@gmail.com";
 
 export default function PrivacyPolicyPage() {
   const lastUpdated = "July 5, 2026";
