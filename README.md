@@ -1,3 +1,12 @@
+# AI Catalog Optimizer
+
+Shopify App — 帮商家优化商品数据，让商品更容易被 AI 购物助手搜索和推荐。
+
+> **项目上下文文档**：[docs/PROJECT_CONTEXT.md](./docs/PROJECT_CONTEXT.md)  
+> 包含产品定位、技术栈、开发路线图、架构约定和当前进度。Cursor 开发时用 `@docs/PROJECT_CONTEXT.md` 引用即可。
+
+---
+
 # Shopify App Template - React Router
 
 This is a template for building a [Shopify app](https://shopify.dev/docs/apps/getting-started) using [React Router](https://reactrouter.com/). It was forked from the [Shopify Remix app template](https://github.com/Shopify/shopify-app-template-remix) and converted to React Router.
