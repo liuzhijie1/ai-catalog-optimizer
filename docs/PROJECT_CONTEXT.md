@@ -50,10 +50,8 @@
 当前 `shopify.app.toml` 配置：
 
 ```
-write_products, write_metaobjects, write_metaobject_definition
+read_products, write_products, write_metaobjects, write_metaobject_definitions
 ```
-
-**待补充**：`read_products`（商品列表页需要读取商品）
 
 ### 开发者背景
 
@@ -86,10 +84,9 @@ write_products, write_metaobjects, write_metaobject_definition
 
 | 项 | 说明 |
 |----|------|
-| 商品列表页 | `app/routes/app.products.tsx` 尚未创建 |
-| LLM 优化引擎 | 无 `optimizer.server.ts`，无优化 Prompt |
-| 优化对比预览 UI | 无优化前后对比 + 评分展示 |
-| 写回 Shopify | 无 `productUpdate` 优化流程 |
+| 商品列表页 | `app/routes/app.products.tsx` — loader 拉取商品 + Polaris 列表展示 |
+| LLM 优化引擎（基础） | `app/services/llm.server.ts` + `optimizer.server.ts` + `/app/test-llm` 测试页 |
+| 优化对比预览 + 写回 | Products 页 Optimize 按钮 + 对比 Modal + `productUpdate` 写回 |
 | 批量优化 | 未实现 |
 | Billing API | 无免费额度 / Pro 订阅 |
 | 部署 | `application_url` 仍为 `example.com` |
@@ -105,9 +102,9 @@ write_products, write_metaobjects, write_metaobject_definition
 |------|------|------|
 | 1 | 环境跑通 | ✅ 完成 |
 | 1.5 | OpenRouter Playground（API Key 验证 + 流式对话） | ✅ 完成 |
-| 2 | 商品列表页（Admin GraphQL 读取商品） | ❌ 下一步 |
-| 3 | LLM 优化引擎（`optimizer.server.ts` + action） | 待做 |
-| 4 | 优化前后对比预览 UI + 一键应用写回 | 待做 |
+| 2 | 商品列表页（Admin GraphQL 读取商品） | ✅ 完成 |
+| 3 | LLM 优化引擎（`optimizer.server.ts` + action） | ✅ 完成 |
+| 4 | 优化前后对比预览 UI + 一键应用写回 | ✅ 完成 |
 | 5 | 批量优化 + Billing API 收费 | 待做 |
 | 6 | 部署 + 提交 App Store 审核 | 待做 |
 
@@ -127,11 +124,18 @@ loader 拉取商品（Admin GraphQL）
 
 ### LLM Prompt 优化原则（已定稿）
 
-1. 标题 = 品牌 + 品类 + 核心特征 + 适用场景
+1. 标题 = 品类 + 核心特征 + 适用场景；**仅当原数据有品牌时才写品牌**
 2. 描述前两句说清「给谁用、解决什么问题」
-3. 补全 AI 匹配属性：材质、尺寸、场景、人群
-4. 标签覆盖自然语言搜索意图
+3. 补全 AI 匹配属性（材质、尺寸、场景、人群），**但不能编造原数据没有的具体事实**
+4. 标签覆盖自然语言搜索意图，基于已有信息扩展同义词
 5. 要求只返回纯 JSON，代码里做 ` ```json ` 围栏清理
+
+### 反幻觉约束
+
+- **严禁编造**：品牌名、材质、具体尺寸、产地、认证等输入中未出现的信息
+- **无品牌时不虚构品牌**；无规格时可省略或写笼统表述
+- `improvements` 用 `[Grounded]` / `[Inferred]` 前缀区分
+- 返回 `inferred_notes` 数组，供商家审核后再写回 Shopify
 
 ### 架构约定
 
@@ -157,7 +161,10 @@ loader 拉取商品（Admin GraphQL）
 
 ```
 app/
-├── openrouter.server.ts          # OpenRouter API 封装（chat + stream）
+├── openrouter.server.ts          # OpenRouter API 封装（Playground 流式 chat）
+├── services/
+│   ├── llm.server.ts             # OpenRouter 模型适配层（OpenAI SDK）
+│   └── optimizer.server.ts       # 商品 AI 优化 Prompt + JSON 解析
 ├── hooks/
 │   └── useAdaptiveTypewriter.ts  # 流式打字机效果
 ├── utils/
@@ -165,10 +172,11 @@ app/
 ├── routes/
 │   ├── app.tsx                   # App 布局 + 导航
 │   ├── app._index.tsx            # 首页（当前为模板 Demo，待替换）
+│   ├── app.products.tsx          # 商品列表页
+│   ├── app.test-llm.tsx          # LLM 优化引擎测试页
 │   ├── app.playground.tsx        # OpenRouter 对话测试页
 │   ├── app.playground.stream.tsx # 流式 API 端点
-│   ├── app.additional.tsx        # 模板附加页（可后续删除）
-│   └── app.products.tsx          # 【待建】商品列表页
+│   └── app.additional.tsx        # 模板附加页（可后续删除）
 ├── shopify.server.ts             # Shopify 认证
 └── db.server.ts                  # Prisma 客户端
 
@@ -182,7 +190,9 @@ shopify.app.toml                  # App 配置 + scopes
 ### 导航结构（当前）
 
 - Home → `/app`
+- Products → `/app/products`
 - Playground → `/app/playground`
+- LLM Test → `/app/test-llm`（开发调试用）
 - Additional page → `/app/additional`（模板遗留，后续可移除）
 
 ### 导航结构（计划）
@@ -195,7 +205,7 @@ shopify.app.toml                  # App 配置 + scopes
 
 ## 阶段 2 下一步（商品列表页）
 
-1. 在 `shopify.app.toml` 补充 `read_products` scope
+1. ~~在 `shopify.app.toml` 补充 `read_products` scope~~ ✅ 已完成
 2. 新建 `app/routes/app.products.tsx`
    - **loader**：`admin.graphql` 拉取商品列表（title、status、featuredImage、tags 等）
    - **UI**：Polaris Web Components 列表展示
