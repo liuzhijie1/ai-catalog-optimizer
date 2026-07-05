@@ -1,16 +1,30 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
+import {
+  BatchOptimizeProgress,
+  type BatchItemResult,
+  type BatchRunState,
+} from "../components/BatchOptimizeProgress";
 import { OptimizePreviewModal } from "../components/OptimizePreviewModal";
+import { UpgradeButton } from "../components/UpgradeButton";
 import type { OptimizeResult } from "../services/optimizer.server";
-import { optimizeForAI } from "../services/optimizer.server";
+import {
+  applyProductOptimization,
+  fetchProductNode,
+  optimizeAndApplyProduct,
+  optimizeProduct,
+} from "../services/product-optimize.server";
+import { logOptimizationApplied } from "../services/optimization-log.server";
+import { syncShopPlanFromBilling } from "../services/billing.server";
+import { getUsageSummary, type UsageSummary } from "../services/usage.server";
 import { authenticate } from "../shopify.server";
 import type { ProductListItem } from "../types/product";
 
@@ -39,56 +53,35 @@ const PRODUCTS_QUERY = `#graphql
   }
 `;
 
-const PRODUCT_QUERY = `#graphql
-  query ProductForOptimize($id: ID!) {
-    product(id: $id) {
-      id
-      title
-      description
-      productType
-      tags
-    }
-  }
-`;
-
-const PRODUCT_UPDATE_MUTATION = `#graphql
-  mutation ProductUpdate($input: ProductInput!) {
-    productUpdate(input: $input) {
-      product {
-        id
-        title
-        descriptionHtml
-        tags
-      }
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
 type OptimizeActionData = {
   intent: "optimize";
   product: ProductListItem;
   result: OptimizeResult;
-  error?: never;
+  usage: UsageSummary;
+};
+
+type OptimizeApplyActionData = {
+  intent: "optimize-and-apply";
+  productId: string;
+  title: string;
+  usage: UsageSummary;
 };
 
 type ApplyActionData = {
   intent: "apply";
   success: true;
   productId: string;
-  error?: never;
 };
 
 type ErrorActionData = {
-  intent: "optimize" | "apply";
+  intent: "optimize" | "apply" | "optimize-and-apply";
   error: string;
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, billing, session } = await authenticate.admin(request);
+  await syncShopPlanFromBilling(session.shop, billing);
+  const usage = await getUsageSummary(session.shop);
 
   const response = await admin.graphql(PRODUCTS_QUERY, {
     variables: { first: 25 },
@@ -133,11 +126,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
   );
 
-  return { products };
+  return { products, usage };
 };
 
+function toListProduct(
+  node: Awaited<ReturnType<typeof fetchProductNode>>,
+  product?: ProductListItem,
+): ProductListItem {
+  return {
+    id: node.id,
+    title: node.title,
+    handle: product?.handle ?? "",
+    status: product?.status ?? "ACTIVE",
+    description: node.description,
+    productType: node.productType,
+    tags: node.tags,
+    updatedAt: product?.updatedAt ?? "",
+    imageUrl: product?.imageUrl ?? null,
+    imageAlt: product?.imageAlt ?? node.title,
+  };
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
 
@@ -148,43 +159,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     try {
-      const response = await admin.graphql(PRODUCT_QUERY, {
-        variables: { id: productId },
-      });
-      const { data } = await response.json();
-      const node = data?.product;
-
-      if (!node) {
-        return {
-          intent: "optimize",
-          error: "Product not found.",
-        } satisfies ErrorActionData;
-      }
-
-      const listProduct = {
-        id: node.id,
-        title: node.title,
-        handle: "",
-        status: "ACTIVE" as const,
-        description: node.description,
-        productType: node.productType,
-        tags: node.tags,
-        updatedAt: "",
-        imageUrl: null,
-        imageAlt: null,
-      };
-
-      const result = await optimizeForAI({
-        title: node.title,
-        description: node.description,
-        productType: node.productType,
-        tags: node.tags.join(", "),
-      });
+      const node = await fetchProductNode(admin, productId);
+      const { result, usage } = await optimizeProduct(session.shop, node);
 
       return {
         intent: "optimize",
-        product: listProduct,
+        product: toListProduct(node),
         result,
+        usage,
       } satisfies OptimizeActionData;
     } catch (error) {
       return {
@@ -195,11 +177,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "optimize-and-apply") {
+    const productId = formData.get("productId");
+    if (typeof productId !== "string" || !productId) {
+      return {
+        intent: "optimize-and-apply",
+        error: "Missing product ID.",
+      } satisfies ErrorActionData;
+    }
+
+    try {
+      const result = await optimizeAndApplyProduct(
+        admin,
+        session.shop,
+        productId,
+      );
+
+      return {
+        intent: "optimize-and-apply",
+        productId: result.productId,
+        title: result.title,
+        usage: result.usage,
+      } satisfies OptimizeApplyActionData;
+    } catch (error) {
+      return {
+        intent: "optimize-and-apply",
+        error:
+          error instanceof Error ? error.message : "Batch item failed.",
+      } satisfies ErrorActionData;
+    }
+  }
+
   if (intent === "apply") {
     const productId = formData.get("productId");
     const title = formData.get("title");
     const descriptionHtml = formData.get("descriptionHtml");
     const tagsJson = formData.get("tags");
+    const scoreBefore = formData.get("scoreBefore");
+    const scoreAfter = formData.get("scoreAfter");
+    const productTitle = formData.get("productTitle");
 
     if (
       typeof productId !== "string" ||
@@ -218,25 +234,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     try {
-      const response = await admin.graphql(PRODUCT_UPDATE_MUTATION, {
-        variables: {
-          input: {
-            id: productId,
-            title,
-            descriptionHtml,
-            tags,
-          },
-        },
+      await applyProductOptimization(admin, productId, {
+        title,
+        description: descriptionHtml,
+        tags,
       });
 
-      const { data } = await response.json();
-      const userErrors = data?.productUpdate?.userErrors ?? [];
-
-      if (userErrors.length > 0) {
-        return {
-          intent: "apply",
-          error: userErrors.map((e: { message: string }) => e.message).join(", "),
-        } satisfies ErrorActionData;
+      if (
+        typeof scoreBefore === "string" &&
+        typeof scoreAfter === "string" &&
+        typeof productTitle === "string"
+      ) {
+        await logOptimizationApplied({
+          shop: session.shop,
+          productId,
+          productTitle,
+          scoreBefore: Number(scoreBefore),
+          scoreAfter: Number(scoreAfter),
+        });
       }
 
       return {
@@ -284,9 +299,28 @@ function getModalElement() {
     | null;
 }
 
+async function submitBatchItem(productId: string) {
+  const formData = new FormData();
+  formData.set("intent", "optimize-and-apply");
+  formData.set("productId", productId);
+
+  const response = await fetch("/app/products", {
+    method: "POST",
+    body: formData,
+    credentials: "same-origin",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status})`);
+  }
+
+  return (await response.json()) as OptimizeApplyActionData | ErrorActionData;
+}
+
 export default function ProductsPage() {
-  const { products } = useLoaderData<typeof loader>();
+  const { products, usage } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const revalidator = useRevalidator();
   const shopify = useAppBridge();
 
   const [preview, setPreview] = useState<{
@@ -295,10 +329,22 @@ export default function ProductsPage() {
   } | null>(null);
   const [optimizingId, setOptimizingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batch, setBatch] = useState<BatchRunState | null>(null);
 
-  const isBusy = fetcher.state !== "idle";
+  const isBatchRunning = batch?.status === "running";
+  const isBusy = fetcher.state !== "idle" || isBatchRunning;
   const isApplying =
-    isBusy && fetcher.formData?.get("intent") === "apply";
+    fetcher.state !== "idle" && fetcher.formData?.get("intent") === "apply";
+
+  const selectedProducts = useMemo(
+    () => products.filter((p) => selectedIds.has(p.id)),
+    [products, selectedIds],
+  );
+
+  const allSelected =
+    products.length > 0 && selectedIds.size === products.length;
+  const someSelected = selectedIds.size > 0 && !allSelected;
 
   useEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return;
@@ -333,6 +379,129 @@ export default function ProductsPage() {
     }
   }, [fetcher.state, fetcher.data, shopify, products]);
 
+  const toggleSelect = (productId: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(productId);
+      else next.delete(productId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (checked: boolean) => {
+    setSelectedIds(checked ? new Set(products.map((p) => p.id)) : new Set());
+  };
+
+  const runBatch = useCallback(
+    async (queue: ProductListItem[]) => {
+      if (queue.length === 0) return;
+
+      setBatch({
+        status: "running",
+        total: queue.length,
+        completed: 0,
+        results: [],
+        queue,
+      });
+      setActionError(null);
+
+      const results: BatchItemResult[] = [];
+
+      for (let i = 0; i < queue.length; i++) {
+        const product = queue[i];
+
+        try {
+          const data = await submitBatchItem(product.id);
+
+          if ("error" in data && data.error) {
+            results.push({
+              productId: product.id,
+              title: product.title,
+              ok: false,
+              error: data.error,
+            });
+          } else {
+            results.push({
+              productId: product.id,
+              title: product.title,
+              ok: true,
+            });
+          }
+        } catch (error) {
+          results.push({
+            productId: product.id,
+            title: product.title,
+            ok: false,
+            error: error instanceof Error ? error.message : "Request failed.",
+          });
+        }
+
+        setBatch((prev) =>
+          prev
+            ? {
+                ...prev,
+                completed: i + 1,
+                results: [...results],
+              }
+            : prev,
+        );
+      }
+
+      setBatch((prev) => (prev ? { ...prev, status: "done" } : prev));
+      setSelectedIds(new Set());
+      revalidator.revalidate();
+
+      const succeeded = results.filter((r) => r.ok).length;
+      const failed = results.length - succeeded;
+      shopify.toast.show(
+        failed > 0
+          ? `Batch done: ${succeeded} succeeded, ${failed} failed`
+          : `Batch done: ${succeeded} products optimized`,
+        failed > 0 ? { isError: true } : undefined,
+      );
+    },
+    [revalidator, shopify],
+  );
+
+  const handleBatchStart = () => {
+    if (selectedProducts.length === 0 || usage.isLimited) return;
+
+    const remaining = usage.remaining ?? selectedProducts.length;
+    const queue =
+      usage.plan === "pro"
+        ? selectedProducts
+        : selectedProducts.slice(0, remaining);
+
+    if (queue.length === 0) {
+      shopify.toast.show("No optimizations remaining this month.", {
+        isError: true,
+      });
+      return;
+    }
+
+    if (
+      usage.plan === "free" &&
+      selectedProducts.length > queue.length
+    ) {
+      shopify.toast.show(
+        `Only ${queue.length} item(s) will run due to Free plan quota.`,
+      );
+    }
+
+    void runBatch(queue);
+  };
+
+  const handleRetryFailed = () => {
+    if (!batch) return;
+
+    const failedIds = new Set(
+      batch.results.filter((r) => !r.ok).map((r) => r.productId),
+    );
+    const queue = batch.queue.filter((p) => failedIds.has(p.id));
+
+    void runBatch(queue);
+  };
+
   const handleOptimize = (product: ProductListItem) => {
     setActionError(null);
     setOptimizingId(product.id);
@@ -349,9 +518,12 @@ export default function ProductsPage() {
       {
         intent: "apply",
         productId: preview.product.id,
+        productTitle: preview.product.title,
         title: preview.result.title,
         descriptionHtml: preview.result.description,
         tags: JSON.stringify(preview.result.tags),
+        scoreBefore: String(preview.result.score_before),
+        scoreAfter: String(preview.result.score_after),
       },
       { method: "POST" },
     );
@@ -363,8 +535,48 @@ export default function ProductsPage() {
 
   return (
     <s-page heading="Products">
+      {selectedIds.size > 0 && (
+        <s-button
+          slot="primary-action"
+          onClick={handleBatchStart}
+          disabled={isBusy || usage.isLimited}
+          {...(isBatchRunning ? { loading: true } : {})}
+        >
+          Optimize selected ({selectedIds.size})
+        </s-button>
+      )}
+
+      {usage.plan === "pro" ? (
+        <s-banner tone="success">Pro plan — unlimited optimizations</s-banner>
+      ) : usage.isLimited ? (
+        <s-banner tone="warning">
+          <s-stack direction="inline" gap="base">
+            <s-text>
+              You&apos;ve used all {usage.limit} free optimizations this month.
+              Upgrade to Pro for unlimited access.
+            </s-text>
+            <UpgradeButton />
+          </s-stack>
+        </s-banner>
+      ) : (
+        <s-banner tone="info">
+          {usage.used}/{usage.limit} optimizations used this month (
+          {usage.remaining} remaining on Free plan)
+        </s-banner>
+      )}
+
       {actionError && !preview && (
         <s-banner tone="critical">{actionError}</s-banner>
+      )}
+
+      {batch && (
+        <s-section heading="Batch progress">
+          <BatchOptimizeProgress
+            batch={batch}
+            onRetryFailed={handleRetryFailed}
+            onDismiss={() => setBatch(null)}
+          />
+        </s-section>
       )}
 
       <s-section heading={`${products.length} products`} padding="none">
@@ -381,6 +593,15 @@ export default function ProductsPage() {
         ) : (
           <s-table variant="auto">
             <s-table-header-row>
+              <s-table-header listSlot="labeled">
+                <s-checkbox
+                  checked={allSelected}
+                  indeterminate={someSelected}
+                  onChange={(e) => toggleSelectAll(e.currentTarget.checked)}
+                  labelAccessibilityVisibility="exclusive"
+                  accessibilityLabel="Select all products"
+                />
+              </s-table-header>
               <s-table-header listSlot="primary">Product</s-table-header>
               <s-table-header listSlot="inline">Status</s-table-header>
               <s-table-header listSlot="labeled">Tags</s-table-header>
@@ -390,6 +611,16 @@ export default function ProductsPage() {
             <s-table-body>
               {products.map((product) => (
                 <s-table-row key={product.id}>
+                  <s-table-cell>
+                    <s-checkbox
+                      checked={selectedIds.has(product.id)}
+                      onChange={(e) =>
+                        toggleSelect(product.id, e.currentTarget.checked)
+                      }
+                      labelAccessibilityVisibility="exclusive"
+                      accessibilityLabel={`Select ${product.title}`}
+                    />
+                  </s-table-cell>
                   <s-table-cell>
                     <div
                       style={{
@@ -427,7 +658,7 @@ export default function ProductsPage() {
                   <s-table-cell>
                     <s-button
                       onClick={() => handleOptimize(product)}
-                      disabled={isBusy}
+                      disabled={isBusy || usage.isLimited}
                       {...(optimizingId === product.id ? { loading: true } : {})}
                     >
                       Optimize
@@ -448,11 +679,38 @@ export default function ProductsPage() {
         onClose={handleCloseModal}
       />
 
+      <s-section slot="aside" heading="Usage">
+        {usage.plan === "pro" ? (
+          <s-paragraph>
+            <s-text type="strong">Pro plan</s-text> — unlimited optimizations.
+          </s-paragraph>
+        ) : (
+          <s-stack direction="block" gap="base">
+            <s-unordered-list>
+              <s-list-item>
+                Plan: <s-text type="strong">Free</s-text>
+              </s-list-item>
+              <s-list-item>
+                This month: {usage.used}/{usage.limit} used
+              </s-list-item>
+              <s-list-item>{usage.remaining} remaining</s-list-item>
+            </s-unordered-list>
+            <UpgradeButton />
+          </s-stack>
+        )}
+      </s-section>
+
+      <s-section slot="aside" heading="Batch optimize">
+        <s-paragraph>
+          Select multiple products, then use Optimize selected. Batch mode
+          optimizes and applies changes automatically without a preview step.
+        </s-paragraph>
+      </s-section>
+
       <s-section slot="aside" heading="About this page">
         <s-paragraph>
-          Click Optimize to generate AI-friendly titles, descriptions, and tags.
-          Review the preview — especially inferred notes — before applying
-          changes to Shopify.
+          Single Optimize opens a preview with inferred notes. Batch optimize
+          is best when you trust the AI output for many products at once.
         </s-paragraph>
       </s-section>
     </s-page>

@@ -87,12 +87,13 @@ read_products, write_products, write_metaobjects, write_metaobject_definitions
 | 商品列表页 | `app/routes/app.products.tsx` — loader 拉取商品 + Polaris 列表展示 |
 | LLM 优化引擎（基础） | `app/services/llm.server.ts` + `optimizer.server.ts` + `/app/test-llm` 测试页 |
 | 优化对比预览 + 写回 | Products 页 Optimize 按钮 + 对比 Modal + `productUpdate` 写回 |
-| 批量优化 | 未实现 |
-| Billing API | 无免费额度 / Pro 订阅 |
+| 批量优化 | ✅ 多选 + 队列 + 进度条 + 失败重试（自动 apply） |
+| Billing API | 无 Shopify Billing 订阅流程（ShopPlan 表已预留 pro） |
+| 用量限制 | ✅ 免费版 10 次/月（`OptimizationUsage` + `usage.server.ts`） |
 | 部署 | `application_url` 仍为 `example.com` |
 | App Store 上架 | 未开始 |
 | `LLM_PROVIDER` 模型适配层 | 未实现 |
-| 首页替换 | `app._index.tsx` 仍是模板 Demo（生成 snowboard） |
+| 首页替换 | ✅ Dashboard（`app._index.tsx`） |
 
 ---
 
@@ -105,7 +106,7 @@ read_products, write_products, write_metaobjects, write_metaobject_definitions
 | 2 | 商品列表页（Admin GraphQL 读取商品） | ✅ 完成 |
 | 3 | LLM 优化引擎（`optimizer.server.ts` + action） | ✅ 完成 |
 | 4 | 优化前后对比预览 UI + 一键应用写回 | ✅ 完成 |
-| 5 | 批量优化 + Billing API 收费 | 待做 |
+| 5 | 批量优化 + Billing API 收费 | 🔄 批量已完成，Billing 待做 |
 | 6 | 部署 + 提交 App Store 审核 | 待做 |
 
 ---
@@ -171,7 +172,7 @@ app/
 │   └── openrouter-stream.client.ts  # 客户端 SSE 解析
 ├── routes/
 │   ├── app.tsx                   # App 布局 + 导航
-│   ├── app._index.tsx            # 首页（当前为模板 Demo，待替换）
+│   ├── app._index.tsx            # Dashboard 首页
 │   ├── app.products.tsx          # 商品列表页
 │   ├── app.test-llm.tsx          # LLM 优化引擎测试页
 │   ├── app.playground.tsx        # OpenRouter 对话测试页
@@ -189,11 +190,14 @@ shopify.app.toml                  # App 配置 + scopes
 
 ### 导航结构（当前）
 
-- Home → `/app`
+- Dashboard → `/app`
 - Products → `/app/products`
+
+Dev-only（导航已隐藏，本地调试可手动访问或取消 `app.tsx` 注释）：
+
 - Playground → `/app/playground`
-- LLM Test → `/app/test-llm`（开发调试用）
-- Additional page → `/app/additional`（模板遗留，后续可移除）
+- LLM Test → `/app/test-llm`
+- Additional page → `/app/additional`
 
 ### 导航结构（计划）
 
