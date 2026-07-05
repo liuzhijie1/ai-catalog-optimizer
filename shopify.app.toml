@@ -48,6 +48,18 @@ api_version = "2026-10"
   uri = "/webhooks/app/subscriptions_update"
   topics = [ "app_subscriptions/update" ]
 
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  topics = [ "shop/redact" ]
+
 [auth]
 redirect_urls = [ "https://ai-catalog-optimizer-production.up.railway.app/auth/callback" ]
 
