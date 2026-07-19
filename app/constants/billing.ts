@@ -45,10 +45,37 @@ export function formatPlanPriceUsd(price: number): string {
   return price % 1 === 0 ? price.toFixed(0) : price.toFixed(2);
 }
 
-export function getBillingReturnUrl(path = "/app/billing"): string {
+function normalizeBillingPath(path: string): string {
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+function buildEmbeddedBillingReturnUrl(host: string, path: string): string | null {
+  const apiKey = process.env.SHOPIFY_API_KEY;
+  if (!apiKey) return null;
+
+  const adminHost = Buffer.from(host, "base64").toString("utf-8");
+  const embeddedBase = `https://${adminHost}/apps/${apiKey}`;
+  return `${embeddedBase}${normalizeBillingPath(path)}`;
+}
+
+export function getBillingReturnUrl(
+  request: Request,
+  path = "/app/billing",
+): string {
+  const requestUrl = new URL(request.url);
+  const host = requestUrl.searchParams.get("host");
+
+  if (host) {
+    const embeddedReturnUrl = buildEmbeddedBillingReturnUrl(host, path);
+    if (embeddedReturnUrl) {
+      return embeddedReturnUrl;
+    }
+  }
+
   const appUrl = process.env.SHOPIFY_APP_URL?.replace(/\/$/, "");
   if (!appUrl) {
     throw new Error("SHOPIFY_APP_URL is not configured.");
   }
-  return `${appUrl}${path}`;
+
+  return `${appUrl}${normalizeBillingPath(path)}`;
 }

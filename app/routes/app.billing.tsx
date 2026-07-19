@@ -35,7 +35,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     plans: [BILLING_PLAN_PRO, BILLING_PLAN_PRO_PROMO],
   });
   const url = new URL(request.url);
-  const justUpgraded = url.searchParams.get("upgraded") === "1";
+  const justUpgraded =
+    url.searchParams.get("upgraded") === "1" ||
+    url.searchParams.has("charge_id");
   const justDowngraded = url.searchParams.get("downgraded") === "1";
 
   return {
@@ -65,7 +67,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return billing.request({
       plan,
       isTest: isBillingTestMode(),
-      returnUrl: getBillingReturnUrl("/app/billing?upgraded=1"),
+      returnUrl: getBillingReturnUrl(request, "/app/billing?upgraded=1"),
     });
   }
 

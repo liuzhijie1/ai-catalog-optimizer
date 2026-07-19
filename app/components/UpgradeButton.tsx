@@ -1,4 +1,4 @@
-import { useFetcher } from "react-router";
+import { Form, useSearchParams } from "react-router";
 
 type UpgradeButtonProps = {
   label?: string;
@@ -11,25 +11,19 @@ export function UpgradeButton({
   disabled = false,
   promoCode,
 }: UpgradeButtonProps) {
-  const fetcher = useFetcher();
-  const isLoading = fetcher.state !== "idle";
+  const [searchParams] = useSearchParams();
+  const query = searchParams.toString();
+  const action = query ? `/app/billing?${query}` : "/app/billing";
 
   return (
-    <s-button
-      variant="primary"
-      disabled={disabled || isLoading}
-      {...(isLoading ? { loading: true } : {})}
-      onClick={() =>
-        fetcher.submit(
-          {
-            intent: "upgrade",
-            ...(promoCode ? { promoCode } : {}),
-          },
-          { method: "POST", action: "/app/billing" },
-        )
-      }
-    >
-      {label}
-    </s-button>
+    <Form method="post" action={action}>
+      <input type="hidden" name="intent" value="upgrade" />
+      {promoCode ? (
+        <input type="hidden" name="promoCode" value={promoCode} />
+      ) : null}
+      <s-button variant="primary" type="submit" disabled={disabled}>
+        {label}
+      </s-button>
+    </Form>
   );
 }
