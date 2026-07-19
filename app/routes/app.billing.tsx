@@ -1,11 +1,13 @@
+import { useEffect } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
+import { DowngradeButton } from "../components/DowngradeButton";
 import { UpgradeButton } from "../components/UpgradeButton";
 import {
   BILLING_PLAN_PRO,
@@ -14,7 +16,7 @@ import {
   getBillingReturnUrl,
   isBillingTestMode,
 } from "../constants/billing";
-import { syncShopPlanFromBilling } from "../services/billing.server";
+import { downgradeToFreePlan, syncShopPlanFromBilling } from "../services/billing.server";
 import { getUsageSummary } from "../services/usage.server";
 import { authenticate } from "../shopify.server";
 
@@ -26,12 +28,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const billingCheck = await billing.check({ plans: [BILLING_PLAN_PRO] });
   const url = new URL(request.url);
   const justUpgraded = url.searchParams.get("upgraded") === "1";
+  const justDowngraded = url.searchParams.get("downgraded") === "1";
 
   return {
     usage,
     hasActivePayment: billingCheck.hasActivePayment,
+    appSubscriptions: billingCheck.appSubscriptions,
     isTest: isBillingTestMode(),
     justUpgraded,
+    justDowngraded,
   };
 };
 
@@ -48,6 +53,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
   }
 
+  if (intent === "downgrade") {
+    try {
+      await downgradeToFreePlan(session.shop, billing);
+      await syncShopPlanFromBilling(session.shop, billing);
+      return { ok: true, downgraded: true };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to switch to Free plan.";
+      return { error: message };
+    }
+  }
+
   if (intent === "sync") {
     await syncShopPlanFromBilling(session.shop, billing);
     return { ok: true };
@@ -57,10 +74,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function BillingPage() {
-  const { usage, hasActivePayment, isTest, justUpgraded } =
+  const { usage, hasActivePayment, isTest, justUpgraded, justDowngraded } =
     useLoaderData<typeof loader>();
+  const fetcher = useFetcher<typeof action>();
+  const revalidator = useRevalidator();
 
   const isPro = usage.plan === "pro" || hasActivePayment;
+  const actionError =
+    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+  const didDowngrade =
+    justDowngraded ||
+    Boolean(
+      fetcher.data && "downgraded" in fetcher.data && fetcher.data.downgraded,
+    );
+
+  useEffect(() => {
+    if (
+      fetcher.data &&
+      "downgraded" in fetcher.data &&
+      fetcher.data.downgraded
+    ) {
+      revalidator.revalidate();
+    }
+  }, [fetcher.data, revalidator]);
 
   return (
     <s-page heading="Plan & Billing">
@@ -69,6 +105,14 @@ export default function BillingPage() {
           Welcome to Pro! You now have unlimited optimizations.
         </s-banner>
       )}
+
+      {didDowngrade && (
+        <s-banner tone="success">
+          You are now on the Free plan. Your Pro subscription has been cancelled.
+        </s-banner>
+      )}
+
+      {actionError && <s-banner tone="critical">{actionError}</s-banner>}
 
       {isTest && (
         <s-banner tone="info">
@@ -112,7 +156,11 @@ export default function BillingPage() {
                 <s-list-item>Single & batch optimize</s-list-item>
                 <s-list-item>Preview before apply</s-list-item>
               </s-unordered-list>
-              {!isPro && <s-badge tone="success">Current plan</s-badge>}
+              {!isPro ? (
+                <s-badge tone="success">Current plan</s-badge>
+              ) : (
+                <DowngradeButton label="Switch to Free plan" />
+              )}
             </s-stack>
           </s-box>
 
@@ -138,14 +186,12 @@ export default function BillingPage() {
       <s-section slot="aside" heading="Billing FAQ">
         <s-unordered-list>
           <s-list-item>
-            Charges appear on your Shopify invoice, not a separate bill.
+            Upgrade or downgrade anytime on this page — no need to reinstall
+            the app or contact support.
           </s-list-item>
           <s-list-item>
-            You can cancel anytime from Shopify Admin → Settings → Apps.
-          </s-list-item>
-          <s-list-item>
-            After upgrading, refresh this page if your plan does not update
-            immediately.
+            Charges appear on your Shopify invoice and in Settings → Apps →
+            App charges.
           </s-list-item>
         </s-unordered-list>
       </s-section>
