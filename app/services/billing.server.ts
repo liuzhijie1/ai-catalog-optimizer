@@ -1,10 +1,15 @@
-import { BILLING_PLAN_PRO, isBillingTestMode } from "../constants/billing";
+import {
+  BILLING_PLAN_PRO,
+  BILLING_PLAN_PRO_PROMO,
+  isBillingTestMode,
+  type ProBillingPlan,
+} from "../constants/billing";
 import prisma from "../db.server";
 import type { ShopPlan } from "./usage.server";
 
 type BillingCheck = {
-  check: (options: {
-    plans: [typeof BILLING_PLAN_PRO] | Array<typeof BILLING_PLAN_PRO>;
+  check: (options?: {
+    plans?: ProBillingPlan[];
   }) => Promise<{
     hasActivePayment: boolean;
     appSubscriptions: Array<{ id: string }>;
@@ -21,7 +26,7 @@ export async function downgradeToFreePlan(
   billing: BillingCheck,
 ): Promise<void> {
   const billingCheck = await billing.check({
-    plans: [BILLING_PLAN_PRO],
+    plans: [BILLING_PLAN_PRO, BILLING_PLAN_PRO_PROMO],
   });
 
   if (!billingCheck.hasActivePayment) {
@@ -49,7 +54,7 @@ export async function syncShopPlanFromBilling(
   billing: BillingCheck,
 ): Promise<ShopPlan> {
   const { hasActivePayment } = await billing.check({
-    plans: [BILLING_PLAN_PRO],
+    plans: [BILLING_PLAN_PRO, BILLING_PLAN_PRO_PROMO],
   });
 
   const plan: ShopPlan = hasActivePayment ? "pro" : "free";

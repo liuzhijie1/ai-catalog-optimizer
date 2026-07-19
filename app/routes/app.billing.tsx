@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -11,10 +11,16 @@ import { DowngradeButton } from "../components/DowngradeButton";
 import { UpgradeButton } from "../components/UpgradeButton";
 import {
   BILLING_PLAN_PRO,
+  BILLING_PLAN_PRO_PROMO,
   PRO_PLAN_FEATURES,
   PRO_PLAN_PRICE_USD,
+  PRO_PROMO_PRICE_USD,
+  formatPlanPriceUsd,
   getBillingReturnUrl,
   isBillingTestMode,
+  isValidPromoCode,
+  normalizePromoCode,
+  resolveBillingPlanForPromoCode,
 } from "../constants/billing";
 import { downgradeToFreePlan, syncShopPlanFromBilling } from "../services/billing.server";
 import { getUsageSummary } from "../services/usage.server";
@@ -25,7 +31,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   await syncShopPlanFromBilling(session.shop, billing);
 
   const usage = await getUsageSummary(session.shop);
-  const billingCheck = await billing.check({ plans: [BILLING_PLAN_PRO] });
+  const billingCheck = await billing.check({
+    plans: [BILLING_PLAN_PRO, BILLING_PLAN_PRO_PROMO],
+  });
   const url = new URL(request.url);
   const justUpgraded = url.searchParams.get("upgraded") === "1";
   const justDowngraded = url.searchParams.get("downgraded") === "1";
@@ -46,8 +54,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = formData.get("intent");
 
   if (intent === "upgrade") {
+    const promoCode = formData.get("promoCode");
+    const promoCodeValue = typeof promoCode === "string" ? promoCode : "";
+    const plan = resolveBillingPlanForPromoCode(promoCodeValue);
+
+    if (promoCodeValue.trim() && !isValidPromoCode(promoCodeValue)) {
+      return { error: "Invalid promo code." };
+    }
+
     return billing.request({
-      plan: BILLING_PLAN_PRO,
+      plan,
       isTest: isBillingTestMode(),
       returnUrl: getBillingReturnUrl("/app/billing?upgraded=1"),
     });
@@ -78,6 +94,19 @@ export default function BillingPage() {
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const revalidator = useRevalidator();
+  const [promoCode, setPromoCode] = useState("");
+
+  const normalizedPromoCode = useMemo(
+    () => normalizePromoCode(promoCode),
+    [promoCode],
+  );
+  const hasPromoInput = promoCode.trim().length > 0;
+  const promoApplied = isValidPromoCode(promoCode);
+  const proPriceUsd = promoApplied ? PRO_PROMO_PRICE_USD : PRO_PLAN_PRICE_USD;
+  const proPriceLabel = `$${formatPlanPriceUsd(proPriceUsd)} / month`;
+  const upgradeLabel = promoApplied
+    ? `Upgrade to Pro — $${formatPlanPriceUsd(PRO_PROMO_PRICE_USD)}/mo`
+    : "Upgrade to Pro";
 
   const isPro = usage.plan === "pro" || hasActivePayment;
   const actionError =
@@ -167,16 +196,48 @@ export default function BillingPage() {
           <s-box padding="base" borderWidth="base" borderRadius="base">
             <s-stack direction="block" gap="base">
               <s-heading>Pro</s-heading>
-              <s-text type="strong">${PRO_PLAN_PRICE_USD} / month</s-text>
+              {promoApplied ? (
+                <s-stack direction="inline" gap="small">
+                  <s-text type="strong">{proPriceLabel}</s-text>
+                  <s-text tone="neutral">
+                    (was ${formatPlanPriceUsd(PRO_PLAN_PRICE_USD)} / month)
+                  </s-text>
+                </s-stack>
+              ) : (
+                <s-text type="strong">{proPriceLabel}</s-text>
+              )}
               <s-unordered-list>
                 {PRO_PLAN_FEATURES.map((feature) => (
                   <s-list-item key={feature}>{feature}</s-list-item>
                 ))}
               </s-unordered-list>
+              {!isPro && (
+                <s-text-field
+                  label="Promo code"
+                  value={promoCode}
+                  onChange={(e) => setPromoCode(e.currentTarget.value)}
+                  autocomplete="off"
+                  details="Enter a promo code before upgrading"
+                  error={
+                    hasPromoInput && !promoApplied
+                      ? "Invalid promo code."
+                      : undefined
+                  }
+                />
+              )}
+              {promoApplied && (
+                <s-banner tone="success">
+                  Promo code {normalizedPromoCode} applied — Pro is $
+                  {formatPlanPriceUsd(PRO_PROMO_PRICE_USD)}/month.
+                </s-banner>
+              )}
               {isPro ? (
                 <s-badge tone="success">Current plan</s-badge>
               ) : (
-                <UpgradeButton label="Upgrade to Pro" />
+                <UpgradeButton
+                  label={upgradeLabel}
+                  promoCode={promoApplied ? normalizedPromoCode : undefined}
+                />
               )}
             </s-stack>
           </s-box>

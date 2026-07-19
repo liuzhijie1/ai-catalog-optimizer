@@ -6,7 +6,12 @@ import {
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
-import { BILLING_PLAN_PRO, PRO_PLAN_PRICE_USD } from "./constants/billing";
+import {
+  BILLING_PLAN_PRO,
+  BILLING_PLAN_PRO_PROMO,
+  PRO_PLAN_PRICE_USD,
+  PRO_PROMO_PRICE_USD,
+} from "./constants/billing";
 import prisma from "./db.server";
 
 const shopify = shopifyApp({
@@ -23,6 +28,15 @@ const shopify = shopifyApp({
       lineItems: [
         {
           amount: PRO_PLAN_PRICE_USD,
+          currencyCode: "USD",
+          interval: BillingInterval.Every30Days,
+        },
+      ],
+    },
+    [BILLING_PLAN_PRO_PROMO]: {
+      lineItems: [
+        {
+          amount: PRO_PROMO_PRICE_USD,
           currencyCode: "USD",
           interval: BillingInterval.Every30Days,
         },
